@@ -1,0 +1,28 @@
+From bce51ea9a83eb02fa51bf88d553ae1afef770e96 Mon Sep 17 00:00:00 2001
+From: Keir Fraser <keir.fraser@citrix.com>
+Date: Fri, 24 Jul 2009 10:37:52 +0100
+Subject: [PATCH] hvmloader: Fix get_memsize() to cast high_mem_pgend to 64
+ bits.
+
+Signed-off-by: Joe Jin <joe.jin@oracle.com>
+---
+ tools/firmware/hvmloader/smbios.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/tools/firmware/hvmloader/smbios.c b/tools/firmware/hvmloader/smbios.c
+index 64fa799c0b..a5237cc81e 100644
+--- a/tools/firmware/hvmloader/smbios.c
++++ b/tools/firmware/hvmloader/smbios.c
+@@ -148,7 +148,8 @@ get_memsize(void)
+ 
+     sz = (uint64_t)hvm_info->low_mem_pgend << PAGE_SHIFT;
+     if ( hvm_info->high_mem_pgend )
+-        sz += (hvm_info->high_mem_pgend << PAGE_SHIFT) - (1ull << 32);
++        sz += (((uint64_t)hvm_info->high_mem_pgend << PAGE_SHIFT)
++               - (1ull << 32));
+ 
+     /*
+      * Round up to the nearest MB.  The user specifies domU pseudo-physical 
+-- 
+2.17.1 (Apple Git-112)
+

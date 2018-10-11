@@ -1,0 +1,69 @@
+From 5816c3e4dcb92fb444e7b8eb2004a1fb357ea733 Mon Sep 17 00:00:00 2001
+From: Joe Jin <joe.jin@oracle.com>
+Date: Tue, 10 Dec 2013 17:04:47 +0800
+Subject: [PATCH] Xend: handle died domain in getVCPUInfo()
+
+When created new guest on NUMA server, xend tried to get the best node
+by calculated all vcpus info, if domain already be terminated then
+getVCPUInfo() will throw below exception and guest start failed:
+
+[2013-09-04 20:01:26 6254] ERROR (XendDomainInfo:496) VM start failed
+Traceback (most recent call last):
+  File "/usr/lib64/python2.4/site-packages/xen/xend/XendDomainInfo.py", line 482, in start
+    XendTask.log_progress(31, 60, self._initDomain)
+  File "/usr/lib64/python2.4/site-packages/xen/xend/XendTask.py", line 209, in log_progress
+    retval = func(*args, **kwds)
+  File "/usr/lib64/python2.4/site-packages/xen/xend/XendDomainInfo.py", line 2918, in _initDomain
+    node = self._setCPUAffinity()
+  File "/usr/lib64/python2.4/site-packages/xen/xend/XendDomainInfo.py", line 2835, in _setCPUAffinity
+    best_node = find_relaxed_node(candidate_node_list)[0]
+  File "/usr/lib64/python2.4/site-packages/xen/xend/XendDomainInfo.py", line 2803, in find_relaxed_node
+    cpuinfo = dom.getVCPUInfo()
+  File "/usr/lib64/python2.4/site-packages/xen/xend/XendDomainInfo.py", line 1600, in getVCPUInfo
+    raise XendError(str(exn))
+XendError: (3, 'No such process')
+
+This patch will check return value of xc.vcpu_getinfo() and make sure the
+error not caused by domain died before throw the exception.
+
+Signed-off-by: Joe Jin <joe.jin@oracle.com>
+Acked-by: Matt Wilson <msw@amazon.com>
+Cc: Keir Fraser <keir@xen.org>
+Cc: Konrad Rzeszutek Wilk <konrad.wilk@oracle.com>
+Cc: Ian Jackson <ian.jackson@eu.citrix.com>
+Cc: Ian Campbell <ian.campbell@citrix.com>
+Cc: Roger Pau Monne <roger.pau@citrix.com>
+---
+ tools/python/xen/xend/XendDomainInfo.py | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
+
+diff --git a/tools/python/xen/xend/XendDomainInfo.py b/tools/python/xen/xend/XendDomainInfo.py
+index e9d3e7e612..8d4ff5c749 100644
+--- a/tools/python/xen/xend/XendDomainInfo.py
++++ b/tools/python/xen/xend/XendDomainInfo.py
+@@ -35,8 +35,10 @@ import stat
+ import shutil
+ import traceback
+ from types import StringTypes
++import errno
+ 
+ import xen.lowlevel.xc
++from xen.lowlevel.xc import Error as XCError
+ from xen.util import asserts, auxbin, mkdir
+ from xen.util.blkif import parse_uname
+ import xen.util.xsm.xsm as security
+@@ -1540,7 +1542,10 @@ class XendDomainInfo:
+ 
+             return sxpr
+ 
+-        except RuntimeError, exn:
++        except XCError, exn:
++            # Domain already died.
++            if exn.args[0] == errno.ESRCH:
++                return sxpr
+             raise XendError(str(exn))
+ 
+ 
+-- 
+2.17.1 (Apple Git-112)
+

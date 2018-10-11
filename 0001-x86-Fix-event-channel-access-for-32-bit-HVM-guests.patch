@@ -1,0 +1,246 @@
+From b47276c18fabaf6f0dbb855d3b1d2063b1c73e01 Mon Sep 17 00:00:00 2001
+From: Keir Fraser <keir.fraser@citrix.com>
+Date: Tue, 3 Mar 2009 13:17:05 +0000
+Subject: [PATCH] x86: Fix event-channel access for 32-bit HVM guests.
+
+Based on a patch by Joe Jin <joe.jin@oracle.com>
+
+Signed-off-by: Keir Fraser <keir.fraser@citrix.com>
+---
+ xen/arch/x86/domain.c        |  2 +-
+ xen/arch/x86/domctl.c        |  3 ++-
+ xen/arch/x86/irq.c           |  3 ++-
+ xen/arch/x86/traps.c         |  3 ++-
+ xen/common/domctl.c          | 12 ++++++++----
+ xen/common/event_channel.c   |  4 ++--
+ xen/common/keyhandler.c      |  2 +-
+ xen/common/trace.c           |  2 --
+ xen/common/xenoprof.c        |  2 +-
+ xen/include/asm-x86/domain.h |  1 -
+ xen/include/xen/compat.h     |  5 -----
+ xen/include/xen/sched.h      | 11 +++--------
+ 12 files changed, 22 insertions(+), 28 deletions(-)
+
+diff --git a/xen/arch/x86/domain.c b/xen/arch/x86/domain.c
+index 4d5cc9d75b..84d08dd97d 100644
+--- a/xen/arch/x86/domain.c
++++ b/xen/arch/x86/domain.c
+@@ -840,7 +840,7 @@ map_vcpu_info(struct vcpu *v, unsigned long mfn, unsigned offset)
+      * lost.  The domain will get a spurious event, but it can cope.
+      */
+     vcpu_info(v, evtchn_upcall_pending) = 1;
+-    for ( i = 0; i < BITS_PER_GUEST_LONG(d); i++ )
++    for ( i = 0; i < BITS_PER_EVTCHN_WORD(d); i++ )
+         set_bit(i, &vcpu_info(v, evtchn_pending_sel));
+ 
+     return 0;
+diff --git a/xen/arch/x86/domctl.c b/xen/arch/x86/domctl.c
+index ab28b22725..e17197c19b 100644
+--- a/xen/arch/x86/domctl.c
++++ b/xen/arch/x86/domctl.c
+@@ -494,7 +494,8 @@ long arch_do_domctl(
+             break;
+         }
+ 
+-        domctl->u.address_size.size = BITS_PER_GUEST_LONG(d);
++        domctl->u.address_size.size =
++            is_pv_32on64_domain(d) ? 32 : BITS_PER_LONG;
+ 
+         ret = 0;
+         rcu_unlock_domain(d);
+diff --git a/xen/arch/x86/irq.c b/xen/arch/x86/irq.c
+index a0829a05ba..18baba02db 100644
+--- a/xen/arch/x86/irq.c
++++ b/xen/arch/x86/irq.c
+@@ -1104,7 +1104,8 @@ static void dump_irqs(unsigned char key)
+                        (test_bit(d->pirq_to_evtchn[irq],
+                                  &shared_info(d, evtchn_pending)) ?
+                         'P' : '-'),
+-                       (test_bit(d->pirq_to_evtchn[irq]/BITS_PER_GUEST_LONG(d),
++                       (test_bit(d->pirq_to_evtchn[irq] /
++                                 BITS_PER_EVTCHN_WORD(d),
+                                  &vcpu_info(d->vcpu[0], evtchn_pending_sel)) ?
+                         'S' : '-'),
+                        (test_bit(d->pirq_to_evtchn[irq],
+diff --git a/xen/arch/x86/traps.c b/xen/arch/x86/traps.c
+index f6e0eaf59d..59da034042 100644
+--- a/xen/arch/x86/traps.c
++++ b/xen/arch/x86/traps.c
+@@ -3095,7 +3095,8 @@ long register_guest_nmi_callback(unsigned long address)
+ 
+     t->vector  = TRAP_nmi;
+     t->flags   = 0;
+-    t->cs      = !IS_COMPAT(d) ? FLAT_KERNEL_CS : FLAT_COMPAT_KERNEL_CS;
++    t->cs      = (is_pv_32on64_domain(d) ?
++                  FLAT_COMPAT_KERNEL_CS : FLAT_KERNEL_CS);
+     t->address = address;
+     TI_SET_IF(t, 1);
+ 
+diff --git a/xen/common/domctl.c b/xen/common/domctl.c
+index a693dd7ca4..df6954370a 100644
+--- a/xen/common/domctl.c
++++ b/xen/common/domctl.c
+@@ -242,13 +242,15 @@ long do_domctl(XEN_GUEST_HANDLE(xen_domctl_t) u_domctl)
+         if ( (c.nat = xmalloc(struct vcpu_guest_context)) == NULL )
+             goto svc_out;
+ 
+-        if ( !IS_COMPAT(v->domain) )
+-            ret = copy_from_guest(c.nat, op->u.vcpucontext.ctxt, 1);
+ #ifdef CONFIG_COMPAT
++        if ( !is_pv_32on64_vcpu(v) )
++            ret = copy_from_guest(c.nat, op->u.vcpucontext.ctxt, 1);
+         else
+             ret = copy_from_guest(c.cmp,
+                                   guest_handle_cast(op->u.vcpucontext.ctxt,
+                                                     void), 1);
++#else
++        ret = copy_from_guest(c.nat, op->u.vcpucontext.ctxt, 1);
+ #endif
+         ret = ret ? -EFAULT : 0;
+ 
+@@ -596,12 +598,14 @@ long do_domctl(XEN_GUEST_HANDLE(xen_domctl_t) u_domctl)
+         if ( v != current )
+             vcpu_unpause(v);
+ 
+-        if ( !IS_COMPAT(v->domain) )
+-            ret = copy_to_guest(op->u.vcpucontext.ctxt, c.nat, 1);
+ #ifdef CONFIG_COMPAT
++        if ( !is_pv_32on64_vcpu(v) )
++            ret = copy_to_guest(op->u.vcpucontext.ctxt, c.nat, 1);
+         else
+             ret = copy_to_guest(guest_handle_cast(op->u.vcpucontext.ctxt,
+                                                   void), c.cmp, 1);
++#else
++        ret = copy_to_guest(op->u.vcpucontext.ctxt, c.nat, 1);
+ #endif
+ 
+         if ( copy_to_guest(u_domctl, op, 1) || ret )
+diff --git a/xen/common/event_channel.c b/xen/common/event_channel.c
+index 09702e3d1f..3f36d09e83 100644
+--- a/xen/common/event_channel.c
++++ b/xen/common/event_channel.c
+@@ -548,7 +548,7 @@ static int evtchn_set_pending(struct vcpu *v, int port)
+         return 1;
+ 
+     if ( !test_bit        (port, &shared_info(d, evtchn_mask)) &&
+-         !test_and_set_bit(port / BITS_PER_GUEST_LONG(d),
++         !test_and_set_bit(port / BITS_PER_EVTCHN_WORD(d),
+                            &vcpu_info(v, evtchn_pending_sel)) )
+     {
+         vcpu_mark_events_pending(v);
+@@ -783,7 +783,7 @@ int evtchn_unmask(unsigned int port)
+      */
+     if ( test_and_clear_bit(port, &shared_info(d, evtchn_mask)) &&
+          test_bit          (port, &shared_info(d, evtchn_pending)) &&
+-         !test_and_set_bit (port / BITS_PER_GUEST_LONG(d),
++         !test_and_set_bit (port / BITS_PER_EVTCHN_WORD(d),
+                             &vcpu_info(v, evtchn_pending_sel)) )
+     {
+         vcpu_mark_events_pending(v);
+diff --git a/xen/common/keyhandler.c b/xen/common/keyhandler.c
+index 8118854eca..c481df0f3f 100644
+--- a/xen/common/keyhandler.c
++++ b/xen/common/keyhandler.c
+@@ -225,7 +225,7 @@ static void dump_domains(unsigned char key)
+                    test_bit(v->virq_to_evtchn[VIRQ_DEBUG], 
+                             &shared_info(d, evtchn_mask)),
+                    test_bit(v->virq_to_evtchn[VIRQ_DEBUG] /
+-                            BITS_PER_GUEST_LONG(d),
++                            BITS_PER_EVTCHN_WORD(d),
+                             &vcpu_info(v, evtchn_pending_sel)));
+             send_guest_vcpu_virq(v, VIRQ_DEBUG);
+         }
+diff --git a/xen/common/trace.c b/xen/common/trace.c
+index 129af3c7da..38113d21df 100644
+--- a/xen/common/trace.c
++++ b/xen/common/trace.c
+@@ -37,10 +37,8 @@
+ #define xen_t_buf t_buf
+ CHECK_t_buf;
+ #undef xen_t_buf
+-#define TB_COMPAT IS_COMPAT(dom0)
+ #else
+ #define compat_t_rec t_rec
+-#define TB_COMPAT 0
+ #endif
+ 
+ /* opt_tbuf_size: trace buffer size (in pages) */
+diff --git a/xen/common/xenoprof.c b/xen/common/xenoprof.c
+index f16ac800ef..0a33613caa 100644
+--- a/xen/common/xenoprof.c
++++ b/xen/common/xenoprof.c
+@@ -208,7 +208,7 @@ static int alloc_xenoprof_struct(
+     bufsize = sizeof(struct xenoprof_buf);
+     i = sizeof(struct event_log);
+ #ifdef CONFIG_COMPAT
+-    d->xenoprof->is_compat = IS_COMPAT(is_passive ? dom0 : d);
++    d->xenoprof->is_compat = is_pv_32on64_domain(is_passive ? dom0 : d);
+     if ( XENOPROF_COMPAT(d->xenoprof) )
+     {
+         bufsize = sizeof(struct compat_oprof_buf);
+diff --git a/xen/include/asm-x86/domain.h b/xen/include/asm-x86/domain.h
+index 8fc833a2b9..ec70469308 100644
+--- a/xen/include/asm-x86/domain.h
++++ b/xen/include/asm-x86/domain.h
+@@ -16,7 +16,6 @@
+ #define is_pv_32on64_domain(d) (0)
+ #endif
+ #define is_pv_32on64_vcpu(v)   (is_pv_32on64_domain((v)->domain))
+-#define IS_COMPAT(d)           (is_pv_32on64_domain(d))
+ 
+ struct trap_bounce {
+     uint32_t      error_code;
+diff --git a/xen/include/xen/compat.h b/xen/include/xen/compat.h
+index 86395d134e..63edd3e660 100644
+--- a/xen/include/xen/compat.h
++++ b/xen/include/xen/compat.h
+@@ -178,15 +178,10 @@ void xlat_vcpu_runstate_info(struct vcpu_runstate_info *);
+ int switch_compat(struct domain *);
+ int switch_native(struct domain *);
+ 
+-#define BITS_PER_GUEST_LONG(d) \
+-    (!IS_COMPAT(d) ? BITS_PER_LONG : COMPAT_BITS_PER_LONG)
+-
+ #else
+ 
+ #define compat_handle_is_null(hnd) 0
+ 
+-#define BITS_PER_GUEST_LONG(d) BITS_PER_LONG
+-
+ #endif
+ 
+ #endif /* __XEN_COMPAT_H__ */
+diff --git a/xen/include/xen/sched.h b/xen/include/xen/sched.h
+index f859849da6..aa4c7173df 100644
+--- a/xen/include/xen/sched.h
++++ b/xen/include/xen/sched.h
+@@ -30,12 +30,11 @@ DEFINE_XEN_GUEST_HANDLE(vcpu_runstate_info_compat_t);
+ extern struct domain *dom0;
+ 
+ #ifndef CONFIG_COMPAT
+-#define MAX_EVTCHNS(d)     NR_EVENT_CHANNELS
++#define BITS_PER_EVTCHN_WORD(d) BITS_PER_LONG
+ #else
+-#define MAX_EVTCHNS(d)     (!IS_COMPAT(d) ? \
+-                            NR_EVENT_CHANNELS : \
+-                            sizeof(unsigned int) * sizeof(unsigned int) * 64)
++#define BITS_PER_EVTCHN_WORD(d) (has_32bit_shinfo(d) ? 32 : BITS_PER_LONG)
+ #endif
++#define MAX_EVTCHNS(d) (BITS_PER_EVTCHN_WORD(d) * BITS_PER_EVTCHN_WORD(d) * 64)
+ #define EVTCHNS_PER_BUCKET 128
+ #define NR_EVTCHN_BUCKETS  (NR_EVENT_CHANNELS / EVTCHNS_PER_BUCKET)
+ 
+@@ -542,10 +541,6 @@ uint64_t get_cpu_idle_time(unsigned int cpu);
+ #define IS_PRIV(_d) ((_d)->is_privileged)
+ #define IS_PRIV_FOR(_d, _t) (IS_PRIV(_d) || ((_d)->target && (_d)->target == (_t)))
+ 
+-#ifndef IS_COMPAT
+-#define IS_COMPAT(d) 0
+-#endif
+-
+ #define VM_ASSIST(_d,_t) (test_bit((_t), &(_d)->vm_assist))
+ 
+ #define is_hvm_domain(d) ((d)->is_hvm)
+-- 
+2.17.1 (Apple Git-112)
+

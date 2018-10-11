@@ -1,0 +1,40 @@
+From 2e3a96810a37c0e58e9c59a5ef7439968a410c70 Mon Sep 17 00:00:00 2001
+From: Joe Jin <joe.jin@ORACLE.COM>
+Date: Wed, 14 Mar 2018 10:14:03 -0700
+Subject: [PATCH] xenbaked.c: Avoid divide by zero issue
+
+xenbaked.c -> dump_stats(), run_time = time(&end_time) - time(&start_time),
+time() returns the value in seconds. If one cancels xenmon.py immediately
+after started, run_time can be zero, and then xenbaked will hit divide by
+zero fault.
+
+Signed-off-by: Joe Jin <joe.jin@oracle.com>
+Reviewed-by: Konrad Rzeszutek Wilk <konrad.wilk@oracle.com>
+Acked-by: Wei Liu <wei.liu2@citrix.com>
+---
+ tools/xenmon/xenbaked.c | 8 +++++---
+ 1 file changed, 5 insertions(+), 3 deletions(-)
+
+diff --git a/tools/xenmon/xenbaked.c b/tools/xenmon/xenbaked.c
+index 3d9e0ed900..d3f940a26b 100644
+--- a/tools/xenmon/xenbaked.c
++++ b/tools/xenmon/xenbaked.c
+@@ -243,10 +243,12 @@ static void dump_stats(void)
+     }
+ 
+     printf("processed %d total records in %d seconds (%ld per second)\n",
+-           rec_count, (int)run_time, (long)(rec_count/run_time));
++           rec_count, (int)run_time,
++           run_time ? (long)(rec_count/run_time) : 0L);
+ 
+-    printf("woke up %d times in %d seconds (%ld per second)\n", wakeups,
+-	   (int) run_time, (long)(wakeups/run_time));
++    printf("woke up %d times in %d seconds (%ld per second)\n",
++           wakeups, (int) run_time,
++           run_time ? (long)(wakeups/run_time) : 0L);
+ 
+     check_gotten_sum();
+ }
+-- 
+2.17.1 (Apple Git-112)
+

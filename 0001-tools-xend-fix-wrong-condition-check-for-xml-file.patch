@@ -1,0 +1,33 @@
+From 191e485a1929a02706ec3301f3185b2b89c3253f Mon Sep 17 00:00:00 2001
+From: Joe Jin <joe.jin@oracle.com>
+Date: Thu, 18 Oct 2012 09:35:08 +0100
+Subject: [PATCH] tools: xend: fix wrong condition check for xml file
+
+In commit e8d40584, it intended to check xml file size and when empty will
+return, the condition should be "if os.path.getsize(xml_path) == 0" rather
+then "if not os.path.getsize(xml_path) == 0".
+
+Signed-off-by: Chuang Cao <chuang.cao@oracle.com>
+Signed-off-by: Joe Jin <joe.jin@oracle.com>
+Reviewed-by: Konrad Rzeszutek Wilk <konrad.wilk@oracle.com>
+Committed-by: Ian Campbell <ian.campbell@citrix.com>
+---
+ tools/python/xen/xend/XendStateStore.py | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/tools/python/xen/xend/XendStateStore.py b/tools/python/xen/xend/XendStateStore.py
+index 17a29f180e..a66181d1d4 100644
+--- a/tools/python/xen/xend/XendStateStore.py
++++ b/tools/python/xen/xend/XendStateStore.py
+@@ -101,7 +101,7 @@ class XendStateStore:
+         if not os.path.exists(xml_path):
+             return {}
+ 
+-        if not os.path.getsize(xml_path) == 0:
++        if os.path.getsize(xml_path) == 0:
+             return {}
+ 
+         dom = minidom.parse(xml_path)
+-- 
+2.17.1 (Apple Git-112)
+
